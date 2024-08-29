@@ -6,31 +6,44 @@ from transformers import pipeline
 from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
 import seaborn as sns
 import matplotlib.pyplot as plt
-from transformers import AutoTokenizer, TFAutoModelForSequenceClassification, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, TFAutoModelForSequenceClassification, AutoModelForCausalLM, AutoModelForSequenceClassification
 from collections import Counter
+import torch
+from typing import List
+import fire
+#from llama import Llama
 
 class SentimentAnalyzerComparison:
-    def __init__(self, language, multilingual_model=True, model="llama2"):
+    def __init__(self, language="en", multilingual_model=False, llm=False):
         self.language = language
         self.multilingual_model = multilingual_model
         self.api_url="http://192.168.201.104:8080/api/"
-        self.model=model
-        if self.multilingual_model:
-            self.tokenizer = AutoTokenizer.from_pretrained("nlptown/bert-base-multilingual-uncased-sentiment")
-            self.model = AutoModelForSequenceClassification.from_pretrained("nlptown/bert-base-multilingual-uncased-sentiment")
-            self.pipe = pipeline("sentiment-analysis", model=self.model, tokenizer=self.tokenizer)
-        elif self.language == "fr" and self.multilingual_model==False:
+        self.llm=llm
+        if self.language == "fr":
             self.base_url = "https://fr-be.trustpilot.com/review/www.keytradebank.be?page="
-            self.tokenizer = AutoTokenizer.from_pretrained("tblard/tf-allocine")
-            self.model = TFAutoModelForSequenceClassification.from_pretrained("tblard/tf-allocine")
-            self.pipe = pipeline("sentiment-analysis", model=self.model, tokenizer=self.tokenizer)
-        elif self.language == "nl" and self.multilingual_model==False:
+        elif self.language == "nl": 
             self.base_url = "https://nl-be.trustpilot.com/review/www.keytradebank.be?page="
-            self.tokenizer = AutoTokenizer.from_pretrained("DTAI-KULeuven/robbert-v2-dutch-sentiment", from_pt=True)
-            self.model = TFAutoModelForSequenceClassification.from_pretrained("DTAI-KULeuven/robbert-v2-dutch-sentiment", from_pt=True)
-            self.pipe = pipeline("sentiment-analysis", model=self.model, tokenizer=self.tokenizer)
         else:
-            raise ValueError("Invalid language. Choose between 'fr', 'nl' and multilingual variable set on True.")
+            self.base_url = "https://www.trustpilot.com/review/www.keytradebank.be?page="
+
+        if self.llm=="llama3":
+            self.pipe = pipeline("text-generation", model=r"C:\Users\Romain\meta-llama\Meta-Llama-3.1-8B-Instruct")
+        elif self.multilingual_model and self.llm==False:
+            tokenizer = AutoTokenizer.from_pretrained("nlptown/bert-base-multilingual-uncased-sentiment")
+            model = AutoModelForSequenceClassification.from_pretrained("nlptown/bert-base-multilingual-uncased-sentiment")
+            self.pipe = pipeline("sentiment-analysis", model=model, tokenizer=tokenizer)
+        elif self.language == "fr" and self.multilingual_model==False and self.llm==False:
+            self.base_url = "https://fr-be.trustpilot.com/review/www.keytradebank.be?page="
+            tokenizer = AutoTokenizer.from_pretrained("tblard/tf-allocine")
+            model = TFAutoModelForSequenceClassification.from_pretrained("tblard/tf-allocine")
+            self.pipe = pipeline("sentiment-analysis", model=self.model, tokenizer=self.tokenizer)
+        elif self.language == "nl" and self.multilingual_model==False and self.llm==False:
+            self.base_url = "https://nl-be.trustpilot.com/review/www.keytradebank.be?page="
+            tokenizer = AutoTokenizer.from_pretrained("DTAI-KULeuven/robbert-v2-dutch-sentiment", from_pt=True)
+            model = TFAutoModelForSequenceClassification.from_pretrained("DTAI-KULeuven/robbert-v2-dutch-sentiment", from_pt=True)
+            self.pipe = pipeline("sentiment-analysis", model=self.model, tokenizer=self.tokenizer)
+        elif self.llm==False and self.multilingual_model==False and self.language!="fr" and self.language!="nl":
+            raise ValueError("Invalid language. Please choose 'fr' or 'nl'.")
 
     def WebScraper(self):
         reviews = []
@@ -105,43 +118,66 @@ class SentimentAnalyzerComparison:
             else:
                 majority_vote = self.MapSentiment(majority_vote)
         return majority_vote
-
-    def get_sentiment_ollama(self, text):
-        if self.language == "fr":
-            payload = {
-                "model": self.model,
-                "prompt": f"<<Commentaire: {text}>>\nÀ partir de cette phrase, déterminez et répondez uniquement si elle est NÉGATIF, NEUTRE ou POSITIF. UN SEUL MOT SANS AUCUN SYMBOLE OU CARACTÈRE SUPPLÉMENTAIRE.",
-                "stream": False
-            }
-        elif self.language == "nl":
-            payload = {
-                "model": self.model,
-                "prompt": f"<<Commentaar: {text}>>\nBepaal en antwoord alleen of deze NEGATIEF, NEUTRAAL of POSITIEF is. ALLEEN EEN WOORD ZONDER ENIGE AANVULLENDE SYMBOLEN OF TEKENS.",
-                "stream": False
-            }
-        else:
-            payload = {
-                "model": self.model,
-                "prompt": f"<<Comment: {text}>>\nFrom this phrase, determine and only answer whether it is NEGATIVE, NEUTRAL, or POSITIVE. ONLY ONE WORD WITHOUT ANY ADDITIONAL SYMBOL OR CHARACTER.",
-                "stream": False
-            }
-
-        response = requests.post(self.api_url + "generate", json=payload)
-
-        if response.status_code == 200:
-            response_json = response.json()
-            sentiment = response_json['response'].strip().replace({"NÉGATIF": "NEGATIVE", "NEUTRE": "NEUTRAL", "POSITIF": "POSITIVE", "NEGATIEF": "NEGATIVE", "NEUTRAAL": "NEUTRAL", "POSITIEF": "POSITIVE"})
+        
+    def get_sentiment_llm(self, text):
+        if self.llm=="llama3":
+            if self.language=="fr":
+                messages = [
+                    {"role": "user", "content": f"<<Commentaire: {text}>>\nÀ partir de cette phrase, déterminez et répondez uniquement si elle est NÉGATIF, NEUTRE ou POSITIF. UN SEUL MOT SANS AUCUN SYMBOLE OU CARACTÈRE SUPPLÉMENTAIRE."}
+                ]
+            elif self.language=="nl":   
+                messages = [
+                    {"role": "user", "content": f"<<Commentaar: {text}>>\nBepaal het gevoel van de klant tussen de drie woorden: NEGATIEF, NEUTRAAL of POSITIEF is. ALLEEN EEN WOORD ZONDER ENIGE AANVULLENDE SYMBOLEN OF TEKENS. (Only answer in one word)"}
+                ]
+            else:
+                messages = [
+                    {"role": "user", "content": f"<<Comment: {text}>>\nFrom this phrase, determine and only answer whether it is NEGATIVE, NEUTRAL, or POSITIVE. ONLY ONE WORD WITHOUT ANY ADDITIONAL SYMBOL OR CHARACTER."}
+                ]
+            sentiment=self.pipe(messages, max_new_tokens=10)
             print(sentiment)
-            return sentiment
-        else:
-            print(f"Erreur: {response.status_code} - {response.text}")
-            return None
+            sentiment=sentiment[0]['generated_text'][-1]['content']
+            print(sentiment)
+        elif self.llm!=False:
+            if self.language == "fr":
+                payload = {
+                    "model": self.llm,
+                    "prompt": f"<<Commentaire: {text}>>\n À partir de cette phrase, déterminez et répondez uniquement si elle est NÉGATIF, NEUTRE ou POSITIF. UN SEUL MOT SANS AUCUN SYMBOLE OU CARACTÈRE SUPPLÉMENTAIRE.",
+                    "stream": False
+                }
+            elif self.language == "nl":
+                payload = {
+                    "model": self.llm,
+                    "prompt": f"<<Commentaar: {text}>>\nBepaal het gevoel van de klant tussen de drie woorden: NEGATIEF, NEUTRAAL of POSITIEF is. ALLEEN EEN WOORD ZONDER ENIGE AANVULLENDE SYMBOLEN OF TEKENS. (Only answer in one word)",
+                    "stream": False
+                }
+            else:
+                payload = {
+                    "model": self.llm,
+                    "prompt": f"<<Comment: {text}>>\nFrom this phrase, determine and only answer whether it is NEGATIVE, NEUTRAL, or POSITIVE. ONLY ONE WORD WITHOUT ANY ADDITIONAL SYMBOL OR CHARACTER.",
+                    "stream": False
+                }
 
-    def PredictSentiments(self, max_length=512, ollama=False):
+            response = requests.post(self.api_url + "generate", json=payload)
+
+            if response.status_code == 200:
+                response_json = response.json()
+                sentiment = response_json['response'].strip().upper()
+            
+        sentiment = sentiment.replace("NÉGATIF", "NEGATIVE")
+        sentiment = sentiment.replace("NEUTRE", "NEUTRAL")
+        sentiment = sentiment.replace("POSITIF", "POSITIVE")
+        sentiment = sentiment.replace("NEGATIEF", "NEGATIVE")
+        sentiment = sentiment.replace("NEUTRAAL", "NEUTRAL")
+        sentiment = sentiment.replace("POSITIEF", "POSITIVE")
+        if sentiment not in ('NEGATIVE', 'NEUTRAL', 'POSITIVE'):
+            sentiment='NEUTRAL'
+        return sentiment
+
+    def PredictSentiments(self, max_length=512):
         df = self.CreateDataFrame()
-        if ollama:
-            df['predicted_notes'] = df['reviews'].apply(lambda review: self.get_sentiment_ollama(review))
-            df.to_excel(f"sentiment_analysis_results_{self.language}_ollama.xlsx", index=False)
+        if self.llm:
+            df['predicted_notes'] = df['reviews'].apply(lambda review: self.get_sentiment_llm(review))
+            df.to_excel(f"sentiment_analysis_results_{self.language}_{self.llm}.xlsx", index=False)
         elif self.multilingual_model:
             df['predicted_notes'] = df['reviews'].apply(lambda review: self.AnalyzeAndVote(review, self.pipe, max_length))
             df.to_excel(f"sentiment_analysis_results_{self.language}_multilingual.xlsx", index=False)
@@ -165,8 +201,8 @@ class SentimentAnalyzerComparison:
         for i, row in top_false_positive.iterrows():
             print(f"Review: {row['reviews']}\nTrue: {row['notes']} | Predicted: {row['predicted_notes']}\n")
 
-    def EvaluatePredictions(self,ollama=False):
-        df = self.PredictSentiments(ollama=ollama)
+    def EvaluatePredictions(self):
+        df = self.PredictSentiments()
         y_true = df['notes']
         y_pred = df['predicted_notes']
         cm = confusion_matrix(y_true, y_pred, labels=['POSITIVE', 'NEUTRAL', 'NEGATIVE'])
@@ -178,24 +214,32 @@ class SentimentAnalyzerComparison:
         plt.title('Confusion Matrix')
         plt.show()
         print("\nClassification Report:")
-        print(classification_report(y_true, y_pred, target_names=['POSITIVE', 'NEUTRAL', 'NEGATIVE']))
+        print(classification_report(y_true, y_pred, target_names=['POSITIVE', 'NEUTRAL', 'NEGATIVE'], zero_division=0))
         accuracy = accuracy_score(y_true, y_pred)
         print(f"\nAccuracy: {accuracy:.2f}")
         print("\nTop Misclassified Reviews:")
-        self.ShowTopMisclassified(df)    
+        self.ShowTopMisclassified(df)   
+    
+    def EvaluatePredictionsOld(self,df):
+        y_true = df['notes']
+        y_pred = df['predicted_notes']
+        cm = confusion_matrix(y_true, y_pred, labels=['POSITIVE', 'NEUTRAL', 'NEGATIVE'])
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=['POSITIVE', 'NEUTRAL', 'NEGATIVE'],
+                    yticklabels=['POSITIVE', 'NEUTRAL', 'NEGATIVE'])
+        plt.xlabel('Predicted')
+        plt.ylabel('Actual')
+        plt.title('Confusion Matrix')
+        plt.show()
+        print("\nClassification Report:")
+        print(classification_report(y_true, y_pred, target_names=['POSITIVE', 'NEUTRAL', 'NEGATIVE'], zero_division=0))
+        accuracy = accuracy_score(y_true, y_pred)
+        print(f"\nAccuracy: {accuracy:.2f}")
+        print("\nTop Misclassified Reviews:")
+        self.ShowTopMisclassified(df)  
 
-# Example Usage:
-analyzer = SentimentAnalyzerComparison(language="nl")
-#analyzer.SaveData()
+analyzer=SentimentAnalyzerComparison("fr",llm="llama3")
 analyzer.EvaluatePredictions()
-
-analyzer = SentimentAnalyzerComparison(language="fr")
-#analyzer.SaveData()
-analyzer.EvaluatePredictions()
-
-
-import pandas as pd
-from collections import Counter
 
 class MajorityVoteAnalyzer:
     def __init__(self, language):
@@ -229,7 +273,7 @@ class MajorityVoteAnalyzer:
         })
 
         # Apply majority voting for each row
-        combined_df['majority_vote'] = combined_df.apply(
+        combined_df['predicted_notes'] = combined_df.apply(
             lambda row: self.get_majority_vote([row['model1_predicted'], 
                                                 row['model2_predicted'], 
                                                 row['model3_predicted']]), 
@@ -248,10 +292,5 @@ class MajorityVoteAnalyzer:
         self.load_predictions()
         combined_df = self.combine_and_vote()
         self.save_combined_results(combined_df)
+        return combined_df
 
-# Example usage:
-# Ensure to provide the correct paths to your Excel files and desired output location
-analyzer = MajorityVoteAnalyzer(language="nl")
-
-# Run the complete majority voting process
-analyzer.run()
